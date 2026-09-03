@@ -1,0 +1,70 @@
+name: CI/CD Docker Microservicio Flask (GHCR)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # ... (Todos los pasos de 'build-and-push-image' permanecen idénticos) ...
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # --- NUEVO JOB DE DESPLIEGUE ---
+  deploy:
+    runs-on: ubuntu-latest
+    # Este job solo se ejecuta si el 'build' fue exitoso
+    needs: build-and-push-image 
+    
+    steps:
+      - name: Desplegar en el servidor vía SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            # 1. Iniciar sesión en GHCR con el PAT
+            # Se usa el 'repository_owner' (el usuario) y el PAT
+            echo "${{ secrets.GHCR_PAT }}" | sudo docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
+            
+            # 2. Descargar la última imagen
+            sudo docker pull ghcr.io/${{ github.repository }}:main
+            
+            # 3. Detener el contenedor actual (|| true evita error si no existe)
+            sudo docker stop flask-api || true
+            
+            # 4. Eliminar el contenedor actual
+            sudo docker rm flask-api || true
+            
+            # 5. Ejecutar el nuevo contenedor con reinicio automático
+            sudo docker run -d --name flask-api -p 5000:5000 --restart always ghcr.io/${{ github.repository }}:main
+            
+            # 6. (Opcional) Limpiar imágenes antiguas no utilizadas
+            sudo docker image prune -f
